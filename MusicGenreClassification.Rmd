@@ -1,0 +1,209 @@
+---
+title: "Music Genre Classification with Machine Learning"
+author: "Lauren Gripenstraw"
+date: "12/20/2017"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r set, include = FALSE}
+library(tidyverse)
+library(randomForest)
+library(class)
+library(pROC)
+library(nnet)
+echo.music <- read_csv("/Users/laurengripenstraw/Downloads/fma_metadata/echonest.csv", skip = 1)
+tracks <- read_csv("/Users/laurengripenstraw/Downloads/fma_metadata/tracks.csv", skip = 1)
+colnames(tracks)[1] <- "track_id"
+colnames(echo.music)[1] <- "track_id"
+echo.music <- echo.music[-1,]
+tracks <- tracks[-1,]
+tracks <- tracks[complete.cases(tracks$genre_top),]
+tracks <- subset(tracks, select = c("track_id", "genre_top"))
+tracks <- subset(tracks, tracks$track_id %in% echo.music$track_id)
+echo.music <- subset(echo.music, echo.music$track_id %in% tracks$track_id)
+table(tracks$genre_top)
+music <- merge(echo.music, tracks, by = "track_id")
+music <- music[, !colnames(music) %in% c("metadata", "metadata_1", "metadata_3", "metadata_5", "metadata_6", "ranks", "ranks_1", "ranks_2", "ranks_3", "ranks_4")]
+music <- music[complete.cases(music),]
+music$genre_top <- as.factor(music$genre_top)
+ix <- 2:240
+music[ix] <- lapply(music[ix], as.numeric)
+rownames(music) <- music[, 1]
+music <- music[, -1]
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+music_n <- as.data.frame(lapply(music[1:239], normalize))
+music1 <- cbind(music$genre_top, music_n)
+colnames(music1)[1] <- "genre_top"
+set.seed(33)
+music_train_ind <- sample(1:nrow(music), 6000)
+music_train <- music[music_train_ind,]
+music_test <- music[-music_train_ind,]
+music_train_n <- music1[music_train_ind,]
+music_test_n <- music1[-music_train_ind,]
+YTrain = music_train_n$genre_top
+XTrain = music_train_n %>% select(-genre_top)
+YTest = music_test_n$genre_top
+XTest = music_test_n %>% select(-genre_top)
+```
+
+## Abstract
+
+  In this project, I attempted to classify songs by genre based on a variety of attributes. This is a classic problem that has been studied extensively by many researchers. With traditional music genre classification, the problem that arises is that though it is done by experts, it is still subjective and thus the same song will have different genre classifications in various music collections. With this project, I attempt to solve that problem by finding a better way to classify music by genre so that when given data about attributes of a song, the result is the same no matter where it is located. To accomplish this, I used machine learning techniques, specifically Random Forests, k Nearest Neighbors, and multinomial logistic regression using a neural net. My results were slightly underwhelming, though one of my methods was able to classify the genres of songs with a relatively small error rate given the complexity of the problem. My conclusion is that music genre classification is a very complex task, perhaps requiring human knowledge to correctly label genres, but given that computers do not yet have the capabilities of the human brain, machine learning can perhaps replicate the thought process of a person with minimal knowledge of music to be marginally successful at genre classification.
+  
+## Introduction
+
+  In this report, I will highlight my journey through various machine learning methods to take on the daunting task of music genre classification. The question I am addressing is: How is music classified by genre and what factors contribute most to these classifications? Many other researchers have attempted to answer this same question with machine learning. In her paper, Kosina [1] approaches the problem from a human standpoint, taking into strong consideration the way human auditory perception works. She references a study conducted by R.O. Gjerdigen and D. Perrot [2]  in which psychology students were asked to choose from one of ten genres after hearing 250 ms of a song. These students had about a 70% accuracy rate against the actual genres from the CD companies. The snippets were so short that the students could not possibly have a concept of the rhythm or melody of the song, so this proved that it is possible to identify the genres of songs based on only spectral or timbral characteristics, which is the basis and the assertion of the machine learning research contained in this paper and that which I am undertaking.   
+	Another study by Karatana and Yildiz [3] used the same machine learning techniques I am implementing for this project and they found that they had a higher success rate in classifying songs labeled as Classical or Metal, which is interesting, but makes sense because those genres do have very unique timbral features. The data set I am using does not feature Metal as a genre, but it does feature Classical. However, the songs they used for their research were 15-16 years old and when they tried their techniques on current songs, the success rate was not as high. With the data set they were using, they achieved at least an 83% success rate in classification among all the algorithms they used. Also, the features of their data set were based purely on timbre, without taking into account melody or rhythm. The data set I used for this project contains data about all attributes of the music, so my findings are different from theirs, as would be expected.  
+	The data set I am using is from the Free Music Archive [4]. It contains several sets of metadata, of which I used the tracks and Echonest sets. The tracks set contained information about the album, artist, location, genre of tracks and more similar features. However, that data set contained many categorical variables with too many different values, so I opted just to extract the track ID and the top genre from that data set. I used the track ID to merge the data with the Echonest set. The Echonest set was extracted from the Echonest (now part of Spotify) API. The features of the songs were extracted using signal processing techniques, which attempt to replicate how the human ear perceives sounds, and data was captured by computers actually “listening” to the music.  
+	My ultimate goal for this project is to train a computer to classify music genres as well as a human based on timbral features of a song. To accomplish this, I employed Random Forests, k-Nearest Neighbors, and a single-hidden-layer neural net, performing multinomial logistic regression. I found that the Random Forest identified the genre correctly about 75% of the time, while the other methods were less successful. My data set came from the Free Music Archive [4], and I used the software packages pROC [5], nnet [6], class [7], randomForest [8], and tidyverse [9].
+	
+## Data and Methods
+
+  The dataset contained many features, including audio features, social features, and temporal features. These were extracted from the Echonest API. The audio features segment contains important timbral features of the song, such as the Zero Crossing Rate, which is when two consecutive values of an audio signal have different marks. It is a simple way of determining the frequency of a signal. There is also the Spectral Centroid, which is the point at which the spectral energy is mainly gathered. It is related to the sound’s sharpness. Another feature is Spectral Contrast, which measures the difference in decibels between the high and the low in the spectrum of a signal. Additional features are the Spectral Bandwidth, which gives the average amplitude difference between frequency magnitude and brightness, and Spectral Rolloff, which is the frequency value corresponding to a certain ratio of the distribution in the spectrum. Social features are metrics obtained from the social aspect of Echonest, such as number of “likes” of a song. The temporal features include aspects relating to rhythm and duration. Examples are: Tempo, Start of Fade Out, Estimated Number of Beats Per Measure, etc. The data originally came from Echonest, but unfortunately in this dataset, the features are only labeled according to their type, without giving specifics, and many of the data have been transformed, so without reaching out to the people who put together the original Echonest dataset, it is very hard to know the exact feature each variable represents. In terms of data preprocessing, I opted to normalize the data to make it between -1 and 1 because each of the variables was on a different scale.  
+	To create the final dataset I ran my models on, I merged the tracks and Echonest sets as mentioned above. My initial step was to remove the columns that contained a majority of NAs, then after that I removed the lines that still had NAs. I also removed the columns with categorical variables besides the Top Genre column because the majority of the contained too many different values to be useful. After I did this, I eliminated the Track IDs that were not in both the tracks set and the Echonest set, then I was able to merge them to create one consistent data set labeled by genre. The final dataset contains 7120 observations and I used a 6000/1120 training/test split.   
+	To make my predictions, I used a Random Forest, k-Nearest Neighbors and a single-hidden-layer neural net. I initially chose the Random Forest because it is easily applied and well suited to multi class classification. I created a Random Forest with 500 trees. I selected 500 because that number is usually suitable in most situations. It has enough trees to minimize the variance but not too many so it overfits. I fitted a model using randomForest() and set importance to TRUE so I could see what variables have the most effect on the genre predictions. After the model was finished running, I made predictions for the training set and calculated the training error. Then I made the predictions for the test set, created a confusion matrix, and calculated the test error.   
+	Next, I employed the k-Nearest Neighbors method for comparison. I used cross-validation with the function knn.cv() and checked the validation error for numbers of neighbors from 1 to 50. I chose 5, the number with the lowest validation error and ran knn() with k = 5 to make my predictions for the test set. I then created a confusion matrix and calculated the test error.  
+	The final method I employed was a single-hidden-layer neural net with 4 units in the hidden layer. I chose this method because of the complexity of this task and approaching it from a more human perspective because the functioning of a neural net is modeled after the mechanism of the human brain. I used the function nnet(). I tried some lower and higher numbers of units in the hidden layer, but I found that 4 minimized the test error. With a larger size, the training error was minimized, but the test error grew because the model was too well trained and it was overfitting the data. I made predictions for the training set and calculated the training error, then I used my trained model to make predictions on the test set. I created a confusion matrix and calculated the test error.  
+	The confusion matrices are important in this analysis because it shows me which genres have higher misclassification rates and I can in that way compare my results to those of Karatana and Yildiz. Other methods I used in my analysis to determine the best model were comparison of the test errors and drawing ROC curves and computing the area under the curve (AUC) for each model.
+
+## Results
+
+``` {r randomForest}
+set.seed(77)
+mod.rf <- randomForest(genre_top ~ ., data = music_train_n, ntree = 500, 
+                       importance = TRUE)
+importance <- mod.rf$importance
+pred.rf.train <- predict(mod.rf)
+train.error.rf <- mean(pred.rf.train != music_train_n$genre_top)
+pred.rf <- predict(mod.rf, newdata = music_test_n)
+conf.matrix = table(predicted = pred.rf, true = music_test$genre_top)
+conf.matrix
+sum(diag(conf.matrix)/sum(conf.matrix))
+1 - sum(diag(conf.matrix)/sum(conf.matrix))
+```
+With this confusion matrix, I can see the overall misclassification rate for this method as well as the misclassification rates for each genre, which I am especially interested in as that gives information about where the lines between genres are blurred, or which genres are the most similar based on auditory characteristics.
+
+``` {r knn}
+set.seed(66)
+validation.error = NULL
+allK = 1:50
+set.seed(55)
+for (i in allK){
+  pred.Yval = knn.cv(train = XTrain, cl = YTrain, k = i)
+  validation.error = c(validation.error, mean(pred.Yval != YTrain))
+}
+validation.error
+pred.knn <- knn(train = XTrain, test = XTest, cl = YTrain, k = 5)
+conf.matrix2 = table(predicted = pred.knn, true = YTest)
+conf.matrix2
+sum(diag(conf.matrix2)/sum(conf.matrix2))
+1 - sum(diag(conf.matrix2)/sum(conf.matrix2))
+```
+I use the results from knn.cv to find the best number of neighbors, which is 5 because it has the lowest validation error, as can be seen in the output for validation.error. Again, the confusion matrix helps me calculate the test error and look for anomalies in the genre classifications.
+
+``` {r nnet, results = "hide"}
+set.seed(44)
+mod.nnet <- nnet(genre_top ~ ., data = music_train_n, family = "multinomial", 
+                 size = 4, maxit = 6000, MaxNWts = 13000)
+pred.nnet.train <- predict(mod.nnet, type = "class")
+train.error.nnet <- mean(pred.nnet.train != YTrain)
+```
+
+```{r nnet2}
+pred.nnet <- predict(mod.nnet, newdata = music_test_n, type = "class")
+conf.matrix3 = table(predicted = pred.nnet, true = YTest)
+conf.matrix3
+sum(diag(conf.matrix3)/sum(conf.matrix3))
+1 - sum(diag(conf.matrix3)/sum(conf.matrix3))
+``` 
+I print the confusion matrix for the same reasons, but this time it shows me that my model only predicted 6 different genres, though there are 12 in the data. Despite this, the test error is not very bad. It is slightly worse than the other two methods, but the 6 genres it chose were those most frequently occurring in the classifications of the other two models.
+``` {r conv, include = FALSE}
+pred.rf.num <- as.numeric(pred.rf)
+pred.knn.num <- as.numeric(pred.knn)
+pred.nnet.fac <- as.factor(pred.nnet)
+pred.nnet.num <- as.numeric(pred.nnet.fac)
+```
+
+``` {r roc, echo = FALSE, results = "hide", fig.keep = "all"}
+roc1 <- multiclass.roc(music_test$genre_top, pred.rf.num)
+rs1 <- roc1[['rocs']]
+plot.roc(rs1[[1]])
+sapply(2:length(rs1), function (x) lines.roc(rs1[[x]],col=x))
+```
+
+``` {r auc}
+auc(roc1)
+```
+
+``` {r roc2, echo = FALSE, results = "hide", fig.keep = "all"}
+roc2 <- multiclass.roc(music_test$genre_top, pred.knn.num)
+rs2 <- roc2[['rocs']]
+plot.roc(rs2[[1]])
+lapply(2:length(rs2), function(x) lines.roc(rs2[[x]],col=x))
+```
+
+``` {r auc2}
+auc(roc2)
+```
+
+``` {r roc3, echo = FALSE, results = "hide", fig.keep = "all"}
+roc3 <- multiclass.roc(music_test$genre_top, pred.nnet.num)
+rs3 <- roc3[['rocs']]
+plot.roc(rs3[[1]])
+lapply(2:length(rs3),function(x) lines.roc(rs3[[x]],col=x))
+```
+
+``` {r auc3}
+auc(roc3)
+```
+
+These plots display the ROC curves for all the classes in each respective model's predictions (Random Forest, KNN and then neural net). The mean area under the curve (AUC) is also computed for each model. We can see by the AUC for the models that KNN is the best performing. Suprisingly, though the test error for the Random Forest was better than that of the neural net, their AUCs were in fact very similar.
+
+## Discussion
+
+I believe I achieved my goal. My most successful algorithm was able to classify song genres correctly about 75% of the time, which is better than the students described in Kosina’s paper, though my models were given slightly more information. The success rate was about what I expected given the complexity of the problem. One conclusion I came to is that some genres have more unique auditory characteristics and are therefore easier to classify. Like Karatana and Yildiz, I found that Classical music had very low misclassification rates. Another genre which was almost consistently classified correctly was Old-Time/Historic music, which was not in the aforementioned study. It makes sense that this is the case though, because historic music is completely different from modern music, which the majority of songs in the data set could be described as. All three methods had trouble distinguishing between Pop and Rock. Pop was the most frequently misclassified genre. Another conclusion I had was that similarity measures between songs can be a big help in this type of classification. Since k-Nearest Neighbors works by detecting similarity in a way, it is no surprise that it performed the best of my three models.  
+	This type of research and classification has many possible ways to be expanded upon. One use of this technology is to be able to recommend music to a user when the genres of songs have not been labelled. Another use is to create custom playlists. This work can be and has been extended into labelling songs with emotions given certain characteristics, rather than streaming services relying on user tagging. With music and machine learning, the possibilities are endless.
+
+## References
+[1] K. Kosina. *Music Genre Recognition*. MSc. Dissertation, Fachschule Hagenberg, June 2002.  
+[2] D. Perrot and R. O. Gjerdigen. *Scanning the dial: An exploration of factors in the identification of musical style*. Proceedings of the 1999 Society for Music Perception and Cognition, 1999.   
+[3] A. Karatana and O. Yildiz. *Music genre classification with machine learning techniques*. IEEE Signal Processing and Communications Applications Conference (SIU), Turkey, May 2017.   
+[4] K. Benzi, M. Defferrard, P. Vandergheynst and X. Bresson. *FMA: A Dataset For Music Analysis*. CoRR, 2016. <https://github.com/mdeff/fma/>   
+[5] Xavier Robin, Natacha Turck, Alexandre Hainard,
+  Natalia Tiberti, Frédérique Lisacek, Jean-Charles
+  Sanchez and Markus Müller (2011). pROC: an
+  open-source package for R and S+ to analyze and
+  compare ROC curves. BMC Bioinformatics, 12, p.
+  77.  DOI: 10.1186/1471-2105-12-77
+  <http://www.biomedcentral.com/1471-2105/12/77/>  
+[6] Venables, W. N. & Ripley, B. D. (2002) Modern
+  Applied Statistics with S. Fourth Edition.
+  Springer, New York. ISBN 0-387-95457-0   
+[7] Venables, W. N. & Ripley, B. D. (2002) Modern
+  Applied Statistics with S. Fourth Edition.
+  Springer, New York. ISBN 0-387-95457-0   
+[8] A. Liaw and M. Wiener (2002). Classification and
+  Regression by randomForest. R News 2(3), 18--22.   
+[9] Hadley Wickham (2017). tidyverse: Easily Install
+  and Load the 'Tidyverse'. R package version
+  1.2.1.
+  https://CRAN.R-project.org/package=tidyverse
+
+This project was completed using R:  
+R Core Team (2013). R: A language and environment for statistical
+  computing. R Foundation for Statistical Computing, Vienna, Austria.
+  URL http://www.R-project.org/.
+
+
+
+
+
